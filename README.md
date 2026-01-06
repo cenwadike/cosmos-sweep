@@ -1,6 +1,6 @@
 # Cosmos Hub Wallet Sweep Tool
 
-A Rust-based tool for sweeping ATOM tokens from multiple wallets to a single destination address, with comprehensive accounting and reporting.
+A Rust-based tool for sweeping ATOM and ICS20 tokens from multiple wallets to a single destination address, with comprehensive accounting and reporting.
 
 ## Features
 
@@ -11,7 +11,7 @@ A Rust-based tool for sweeping ATOM tokens from multiple wallets to a single des
 - Provides real-time console output with formatted summaries
 
 ✅ **Security & Validation**
-- Derives addresses from seed phrases using standard Cosmos path (m/44'/118'/0'/0/0)
+- Derives addresses from seed phrases
 - Verifies derived addresses match CSV addresses
 - Validates destination address format
 - Checks destination has ATOM balance before starting
@@ -37,7 +37,7 @@ A Rust-based tool for sweeping ATOM tokens from multiple wallets to a single des
 
 ### Build
 ```bash
-cd cosmos_sweep
+cd cosmos-sweep
 cargo build --release
 ```
 
@@ -181,11 +181,10 @@ The tool automatically reserves gas fees from each wallet's balance before calcu
 You can modify these constants in `src/main.rs`:
 
 ```rust
-const COSMOS_DERIVATION_PATH: &str = "m/44'/118'/0'/0/0";
 const CHAIN_ID: &str = "cosmoshub-4";
 const DENOM: &str = "uatom";
-const GAS_LIMIT: u64 = 200_000;
-const GAS_PRICE: u128 = 250; // 0.00025 ATOM per gas unit
+const GAS_LIMIT: u64 = 120_000;
+const GAS_PRICE: u128 = 1_000; // 0.001 ATOM 
 ```
 
 ## RPC Endpoint
