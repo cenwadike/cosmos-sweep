@@ -1,25 +1,19 @@
-use bip39::{Language, Mnemonic};
-use cosmrs::tendermint::chain;
+use cosmos_client::signer::Signer;
 use cosmrs::tx::Msg;
 use cosmrs::{
     AccountId, Coin, Denom,
     bank::MsgSend,
-    crypto::secp256k1::SigningKey,
-    tx::{AuthInfo, Body, Fee, Raw, SignDoc, SignerInfo},
+    tx::{Body, Fee, Raw, SignDoc, SignerInfo},
 };
 use csv::ReaderBuilder;
-use hdpath::StandardHDPath;
 use std::error::Error;
 use std::fs::File;
 use std::path::Path;
-use std::str::FromStr;
 use std::time::Instant;
 
-const COSMOS_DERIVATION_PATH: &str = "m/44'/118'/0'/0/0";
 const CHAIN_ID: &str = "cosmoshub-4";
 const DENOM: &str = "uatom";
-const GAS_LIMIT: u64 = 200_000;
-const GAS_PRICE: u128 = 250; // 0.00025 ATOM per gas unit
+const GAS_LIMIT: u64 = 120_000;
 
 #[derive(Debug)]
 struct WalletEntry {
@@ -354,7 +348,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("   CSV Address: {}", entry.address);
 
         // Derive address from seed phrase
-        let derived_address = match derive_address_from_seed(&entry.seed_phrase.as_bytes()) {
+        let derived_address = match derive_address_from_seed(&entry.seed_phrase, "cosmos", "uatom")
+        {
             Ok(addr) => {
                 println!("   Derived:     {}", addr);
                 addr
@@ -406,7 +401,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // Calculate amount to send (leave some for fees)
-        let fee_amount = GAS_LIMIT as u128 * GAS_PRICE;
+        let fee_amount = 1_000;
         accounting.total_gas_fees_reserved += fee_amount;
 
         if balance <= fee_amount {
@@ -438,7 +433,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Transfer balance
         println!("   🚀 Initiating transfer...");
         match transfer_balance(
-            &entry.seed_phrase.as_bytes(),
+            &entry.seed_phrase,
             &entry.address,
             &dest_address,
             amount_to_send,
@@ -527,73 +522,22 @@ fn read_csv(path: &str) -> Result<Vec<WalletEntry>, Box<dyn Error>> {
     Ok(entries)
 }
 
-fn derive_address_from_seed(seed_phrase: &[u8]) -> Result<String, Box<dyn Error>> {
-    // Parse mnemonic
-    let mnemonic = Mnemonic::from_entropy_in(Language::English, seed_phrase)?;
+fn derive_address_from_seed(
+    seed_phrase: &str,
+    prefix: &str,
+    denom: &str,
+) -> Result<String, Box<dyn Error>> {
+    // Mirror the exact parameters from your generate_account function
+    let signer = Signer::from_mnemonic(
+        seed_phrase,
+        prefix, // e.g., "cosmos"
+        denom,  // e.g., "uatom"
+        None,   // pass_phrase
+        0,      // account_index
+        0,      // address_index
+    )?;
 
-    // Generate seed
-    let seed = mnemonic.to_seed("");
-
-    // Parse derivation path
-    let path: StandardHDPath = StandardHDPath::from_str(COSMOS_DERIVATION_PATH).unwrap();
-
-    // Derive key using SLIP-10
-    let derived_key = derive_key_from_path(&seed, &path)?;
-
-    // Create signing key
-    let signing_key = SigningKey::from_slice(&derived_key)?;
-
-    // Get public key and derive address
-    let public_key = signing_key.public_key();
-    let account_id = public_key.account_id("cosmos")?;
-
-    Ok(account_id.to_string())
-}
-
-fn derive_key_from_path(seed: &[u8], path: &StandardHDPath) -> Result<Vec<u8>, Box<dyn Error>> {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha512;
-
-    type HmacSha512 = Hmac<Sha512>;
-
-    // BIP32 master key generation
-    let mut mac = HmacSha512::new_from_slice(b"Bitcoin seed")?;
-    mac.update(seed);
-    let result = mac.finalize().into_bytes();
-
-    let mut key = result[..32].to_vec();
-    let mut chain_code = result[32..].to_vec();
-
-    // Derive through path - iterate through the path components
-    // StandardHDPath doesn't have iter() method, so we need to access components differently
-    let path_str = path.to_string();
-    let components: Vec<&str> = path_str.split('/').skip(1).collect(); // Skip the 'm' prefix
-
-    for component in components {
-        // Parse the index from component (e.g., "44'" -> 44 with hardened flag)
-        let is_hardened = component.ends_with('\'');
-        let index_str = component.trim_end_matches('\'');
-        let index: u32 = index_str.parse()?;
-        let index_value = if is_hardened {
-            index | 0x80000000
-        } else {
-            index
-        };
-
-        let mut data = Vec::new();
-        data.push(0);
-        data.extend_from_slice(&key);
-        data.extend_from_slice(&index_value.to_be_bytes());
-
-        let mut mac = HmacSha512::new_from_slice(&chain_code)?;
-        mac.update(&data);
-        let result = mac.finalize().into_bytes();
-
-        key = result[..32].to_vec();
-        chain_code = result[32..].to_vec();
-    }
-
-    Ok(key)
+    Ok(signer.public_address.to_string())
 }
 
 async fn verify_destination_has_balance(address: &str) -> Result<u128, Box<dyn Error>> {
@@ -607,7 +551,7 @@ async fn verify_destination_has_balance(address: &str) -> Result<u128, Box<dyn E
 
 async fn get_balance(address: &str) -> Result<u128, Box<dyn Error>> {
     // Using public RPC endpoint
-    let rpc_url = "https://cosmos-rpc.publicnode.com";
+    let rpc_url = "https://cosmos-rest.publicnode.com";
     let client = reqwest::Client::new();
 
     let url = format!("{}/cosmos/bank/v1beta1/balances/{}", rpc_url, address);
@@ -634,70 +578,55 @@ async fn get_balance(address: &str) -> Result<u128, Box<dyn Error>> {
 }
 
 async fn transfer_balance(
-    seed_phrase: &[u8],
+    seed_phrase: &str,
     from_address: &str,
     to_address: &str,
     amount: u128,
 ) -> Result<String, Box<dyn Error>> {
-    // Derive signing key
-    let mnemonic = Mnemonic::from_entropy_in(Language::English, seed_phrase)?;
-    let seed = mnemonic.to_seed("");
-    let path: StandardHDPath = StandardHDPath::from_str(COSMOS_DERIVATION_PATH).unwrap();
-    let derived_key = derive_key_from_path(&seed, &path)?;
-    let signing_key = SigningKey::from_slice(&derived_key)?;
+    // 1. Get Signer
+    let signer = Signer::from_mnemonic(seed_phrase, "cosmos", "uatom", None, 0, 0)?;
 
-    // Get account info (sequence and account number)
+    // 2. Get account info
     let (account_number, sequence) = get_account_info(from_address).await?;
 
-    // Create send message
-    let from_account = from_address.parse::<AccountId>()?;
-    let to_account = to_address.parse::<AccountId>()?;
-
+    // 3. Setup message
     let amount_coin = Coin {
         denom: DENOM.parse::<Denom>()?,
-        amount: amount,
+        amount,
     };
 
     let msg_send = MsgSend {
-        from_address: from_account.clone(),
-        to_address: to_account,
+        from_address: from_address.parse()?,
+        to_address: to_address.parse()?,
         amount: vec![amount_coin],
     };
 
-    // Create transaction body
     let body = Body::new(vec![msg_send.to_any()?], "", 0u32);
 
-    // Create fee
+    // Fee
+    let fee_amount = 1_000;
     let fee = Fee::from_amount_and_gas(
         Coin {
             denom: DENOM.parse()?,
-            amount: GAS_LIMIT as u128 * GAS_PRICE,
+            amount: fee_amount,
         },
         GAS_LIMIT,
     );
 
-    // Create signer info
-    let signer_info = SignerInfo::single_direct(Some(signing_key.public_key()), sequence);
+    // 4. Build AuthInfo with proper PublicKey conversion
+    let auth_info =
+        SignerInfo::single_direct(Some(signer.public_key.into()), sequence).auth_info(fee);
 
-    // Create auth info - using builder pattern
-    let auth_info = AuthInfo {
-        signer_infos: vec![signer_info],
-        fee,
-    };
+    // 5. Create and sign SignDoc using private_key
+    let sign_doc = SignDoc::new(&body, &auth_info, &CHAIN_ID.parse()?, account_number)?;
 
-    // Create sign doc
-    let chain_id = CHAIN_ID.parse::<chain::Id>()?;
-    let sign_doc = SignDoc::new(&body, &auth_info, &chain_id, account_number)?;
+    let tx_raw = sign_doc.sign(&signer.private_key)?; // ← Fixed: use private_key, not signing_key
 
-    // Sign transaction
-    let tx_raw = sign_doc.sign(&signing_key)?;
-
-    // Broadcast transaction
     broadcast_tx(&tx_raw).await
 }
 
 async fn get_account_info(address: &str) -> Result<(u64, u64), Box<dyn Error>> {
-    let rpc_url = "https://cosmos-rpc.publicnode.com";
+    let rpc_url = "https://cosmos-rest.publicnode.com";
     let client = reqwest::Client::new();
 
     let url = format!("{}/cosmos/auth/v1beta1/accounts/{}", rpc_url, address);
@@ -726,7 +655,7 @@ async fn get_account_info(address: &str) -> Result<(u64, u64), Box<dyn Error>> {
 async fn broadcast_tx(tx_raw: &Raw) -> Result<String, Box<dyn Error>> {
     use base64::{Engine as _, engine::general_purpose};
 
-    let rpc_url = "https://cosmos-rpc.publicnode.com";
+    let rpc_url = "https://cosmos-rest.publicnode.com";
     let client = reqwest::Client::new();
 
     let tx_bytes = tx_raw.to_bytes()?;

@@ -1,2 +1,3 @@
 /target
 Cargo.lock
+sweep_report_*.csv
